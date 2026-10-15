@@ -152,6 +152,7 @@ dApps
 ddos
 decrypt
 decrypted
+deduplicate
 derypted
 deserialization
 dev
@@ -162,6 +163,7 @@ devtools
 distutils
 dropdown
 eg
+endian
 enodes
 enum
 env
@@ -209,6 +211,7 @@ mmeshsub
 monorepo
 multiaddr
 multifork
+multiproofs
 namespace
 namespaced
 namespaces
@@ -256,6 +259,7 @@ typesafe
 udp
 uint
 unpkg
+untrusted
 util
 utils
 validator

@@ -65,6 +65,7 @@ const sidebars: SidebarsConfig = {
       label: "Developer Tools",
       collapsed: false,
       items: [
+        "libraries/api/using-the-api",
         {
           type: "category",
           label: "Light Client",
