@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {afterEach, beforeAll, beforeEach, describe, expect, it, vi} from "vitest";
+import {afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi} from "vitest";
 import {pubkeyCache} from "@chainsafe/lodestar-z/pubkeys";
 import {
   CompactMultiProof,
@@ -14,9 +14,14 @@ import {routes} from "@lodestar/api";
 import {createBeaconConfig} from "@lodestar/config";
 import {getConfig} from "@lodestar/config/test-utils";
 import {ForkName, SLOTS_PER_EPOCH} from "@lodestar/params";
-import {BeaconStateView, createCachedBeaconState} from "@lodestar/state-transition";
+import {
+  BeaconStateView,
+  IBeaconStateView,
+  NativeBeaconStateView,
+  createBeaconStateView,
+} from "@lodestar/state-transition";
 import {ssz} from "@lodestar/types";
-import {hash, toHex} from "@lodestar/utils";
+import {byteArrayEquals, hash, toHex} from "@lodestar/utils";
 import {getProofApi} from "../../../../../src/api/impl/proof/index.js";
 import {defaultApiOptions} from "../../../../../src/api/options.js";
 import {SyncState} from "../../../../../src/sync/index.js";
@@ -28,15 +33,21 @@ const config = getConfig(ForkName.gloas, 2);
 const forkSlot = 2 * SLOTS_PER_EPOCH;
 const validatorIndices = [0, 1, 3, 4, 5, 15];
 const validatorType = new ContainerType(ssz.phase0.Validator.fields);
+const backends = process.env.LODESTAR_NATIVE_STATE_TRANSITION === "true" ? ["typescript", "native"] : ["typescript"];
 
-describe("proof API across Gloas", () => {
+describe.each(backends)("proof API across Gloas (%s)", (backend) => {
   let modules: ApiTestModules;
   let api: ReturnType<typeof getProofApi>;
-  let headState: BeaconStateView;
+  let headState: IBeaconStateView;
+  const nativeStateTransition = backend === "native";
 
   beforeAll(() => {
-    headState = createState(forkSlot + SLOTS_PER_EPOCH);
+    headState = createState(forkSlot + SLOTS_PER_EPOCH, nativeStateTransition);
     modules = getApiTestModules({config});
+  });
+
+  afterAll(() => {
+    headState?.release();
   });
 
   beforeEach(() => {
@@ -53,13 +64,17 @@ describe("proof API across Gloas", () => {
     [ForkName.gloas, forkSlot],
   ] as const) {
     describe(fork, () => {
-      let state: BeaconStateView;
+      let state: IBeaconStateView;
       let stateRoot: Uint8Array;
       const stateType = config.getForkTypes(slot).BeaconState;
 
       beforeAll(() => {
-        state = createState(slot);
-        stateRoot = stateType.hashTreeRoot(state.toValue());
+        state = createState(slot, nativeStateTransition);
+        stateRoot = stateType.hashTreeRoot(stateType.deserialize(state.serialize()));
+      });
+
+      afterAll(() => {
+        state?.release();
       });
 
       for (const source of ["cached", "historical bytes"] as const) {
@@ -172,6 +187,101 @@ describe("proof API across Gloas", () => {
             expect(Tree.createFromProof(tampered).root).not.toEqual(stateRoot);
             expect(Tree.createFromProof(data).root).not.toEqual(headState.hashTreeRoot());
           });
+
+          if (source === "historical bytes") {
+            it.each(["success", "failure"])("releases the loaded state after proof generation %s", async (outcome) => {
+              const loadOtherState = headState.loadOtherState.bind(headState);
+              const loadedStates: IBeaconStateView[] = [];
+              const load = vi.spyOn(headState, "loadOtherState").mockImplementation((...args) => {
+                const loaded = loadOtherState(...args);
+                vi.spyOn(loaded, "release");
+                loadedStates.push(loaded);
+                return loaded;
+              });
+
+              try {
+                const descriptor =
+                  outcome === "failure"
+                    ? new Uint8Array()
+                    : computeDescriptor([stateType.getPathInfo(["validators", 3]).gindex]);
+                const response = api.getStateProof({stateId, descriptor});
+                if (outcome === "failure") {
+                  await expect(response).rejects.toThrow();
+                } else {
+                  const {data} = await response;
+                  assert(!(data instanceof Uint8Array));
+                  expectProof(data, stateRoot, [
+                    [
+                      stateType.getPathInfo(["validators", 3]).gindex,
+                      validatorType.hashTreeRoot(state.getValidator(3)),
+                    ],
+                  ]);
+                }
+                expect(load).toHaveBeenCalledOnce();
+                expect(loadedStates[0].release).toHaveBeenCalledOnce();
+              } finally {
+                for (const loaded of loadedStates) {
+                  if (vi.mocked(loaded.release).mock.calls.length === 0) loaded.release();
+                  vi.mocked(loaded.release).mockRestore();
+                }
+                load.mockRestore();
+              }
+            });
+          } else {
+            it.each(["success", "failure"])("keeps the cached state after proof generation %s", async (outcome) => {
+              const release = vi.spyOn(state, "release");
+              try {
+                const gindex = stateType.getPathInfo(["validators", 3]).gindex;
+                const descriptor = outcome === "failure" ? new Uint8Array() : computeDescriptor([gindex]);
+                const response = api.getStateProof({stateId, descriptor});
+                if (outcome === "failure") {
+                  await expect(response).rejects.toThrow();
+                } else {
+                  await response;
+                }
+                expect(release).not.toHaveBeenCalled();
+                expect(state.hashTreeRoot()).toEqual(stateRoot);
+              } finally {
+                release.mockRestore();
+              }
+            });
+          }
+
+          if (nativeStateTransition) {
+            it("returns the same compact proof bytes as the TypeScript state", async () => {
+              const reference = createState(slot, false);
+              try {
+                const targets: [bigint, Uint8Array][] = [
+                  [
+                    stateType.getPathInfo(["validators", 15]).gindex,
+                    validatorType.hashTreeRoot(reference.getValidator(15)),
+                  ],
+                  [
+                    concatGindices([
+                      stateType.getPathInfo(["validators", 3]).gindex,
+                      validatorType.getPathInfo(["withdrawalCredentials"]).gindex,
+                    ]),
+                    reference.getValidator(3).withdrawalCredentials,
+                  ],
+                  [
+                    concatGindices([stateType.getPathInfo(["validators"]).gindex, 3n]),
+                    ssz.UintNum64.hashTreeRoot(reference.validatorCount),
+                  ],
+                ];
+                const descriptor = computeDescriptor([
+                  ...targets.map(([gindex]) => gindex),
+                  ...[3, 4].map((index) => stateType.getPathInfo(["balances", index]).gindex),
+                ]);
+                const {data, meta} = await api.getStateProof({stateId, descriptor});
+                assert(!(data instanceof Uint8Array));
+                expect(meta.version).toBe(fork);
+                expect(data).toEqual(reference.createMultiProof(descriptor));
+                expectProof(data, reference.hashTreeRoot(), targets);
+              } finally {
+                reference.release();
+              }
+            });
+          }
         });
       }
 
@@ -216,7 +326,7 @@ describe("proof API across Gloas", () => {
   }
 });
 
-function createState(slot: number): BeaconStateView {
+function createState(slot: number, nativeStateTransition: boolean): IBeaconStateView {
   const state = generateState({slot}, config, true);
   state.genesisTime = 0;
   for (let index = 0; index < state.validators.length; index++) {
@@ -224,9 +334,24 @@ function createState(slot: number): BeaconStateView {
     state.balances.set(index, 32_000_000_000 + index);
   }
   state.commit();
-  return new BeaconStateView(
-    createCachedBeaconState(state, {config: createBeaconConfig(config, state.genesisValidatorsRoot), pubkeyCache})
-  );
+  pubkeyCache.ensureCapacity(state.validators.length);
+  const stateBytes = state.serialize();
+  const view = createBeaconStateView({
+    nativeStateTransition,
+    config: createBeaconConfig(config, state.genesisValidatorsRoot),
+    stateBytes,
+  });
+  try {
+    expect(view, `state backend at slot ${slot}`).toBeInstanceOf(
+      nativeStateTransition ? NativeBeaconStateView : BeaconStateView
+    );
+    expect(byteArrayEquals(view.serialize(), stateBytes), `state bytes at slot ${slot}`).toBe(true);
+    expect(view.hashTreeRoot(), `state root at slot ${slot}`).toEqual(state.hashTreeRoot());
+    return view;
+  } catch (error) {
+    view.release();
+    throw error;
+  }
 }
 
 function expectProof(proof: CompactMultiProof, expectedRoot: Uint8Array, targets: [bigint, Uint8Array][]): void {

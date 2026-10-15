@@ -25,10 +25,14 @@ export function getProofApi(
 
       const state = res.state instanceof Uint8Array ? chain.getHeadState().loadOtherState(res.state) : res.state;
 
-      return {
-        data: state.createMultiProof(descriptor),
-        meta: {version: config.getForkName(state.slot)},
-      };
+      try {
+        return {
+          data: state.createMultiProof(descriptor),
+          meta: {version: config.getForkName(state.slot)},
+        };
+      } finally {
+        if (res.state instanceof Uint8Array) state.release();
+      }
     },
     async getBlockProof({blockId, descriptor}) {
       // descriptor.length / 2 is a rough approximation of # of gindices
