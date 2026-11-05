@@ -200,10 +200,11 @@ describe.each(backends)("proof API across Gloas (%s)", (backend) => {
               });
 
               try {
-                const descriptor =
+                const descriptor = computeDescriptor([
                   outcome === "failure"
-                    ? new Uint8Array()
-                    : computeDescriptor([stateType.getPathInfo(["validators", 3]).gindex]);
+                    ? stateType.getPathInfo(["slot"]).gindex * 2n
+                    : stateType.getPathInfo(["validators", 3]).gindex,
+                ]);
                 const response = api.getStateProof({stateId, descriptor});
                 if (outcome === "failure") {
                   await expect(response).rejects.toThrow();
@@ -232,7 +233,9 @@ describe.each(backends)("proof API across Gloas (%s)", (backend) => {
               const release = vi.spyOn(state, "release");
               try {
                 const gindex = stateType.getPathInfo(["validators", 3]).gindex;
-                const descriptor = outcome === "failure" ? new Uint8Array() : computeDescriptor([gindex]);
+                const descriptor = computeDescriptor([
+                  outcome === "failure" ? stateType.getPathInfo(["slot"]).gindex * 2n : gindex,
+                ]);
                 const response = api.getStateProof({stateId, descriptor});
                 if (outcome === "failure") {
                   await expect(response).rejects.toThrow();

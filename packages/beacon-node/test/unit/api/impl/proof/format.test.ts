@@ -89,12 +89,12 @@ describe.each(backends)("proof format over HTTP (native=%s)", (nativeStateTransi
         ["missing format", "", 400],
         ["odd hex length", "?format=0x8", 400],
         ["invalid hex", "?format=0xzz", 400],
-        ["empty descriptor", "?format=0x", 500],
-        ["unfinished tree", "?format=0x00", 500],
-        ["extra byte", "?format=0x8000", 500],
-        ["nonzero padding", "?format=0x81", 500],
-        ["descriptor byte guard", `?format=0x80${"00".repeat(1024)}`, 500],
-      ] as const)("records the current v0 response for %s", async (_name, query, status) => {
+        ["empty descriptor", "?format=0x", 400],
+        ["unfinished tree", "?format=0x00", 400],
+        ["extra byte", "?format=0x8000", 400],
+        ["nonzero padding", "?format=0x81", 400],
+        ["descriptor byte guard", `?format=0x80${"00".repeat(1024)}`, 413],
+      ] as const)("rejects %s", async (_name, query, status) => {
         const response = await server.inject({url: `${url}${query}`});
         expect(response.statusCode).toBe(status);
       });

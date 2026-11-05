@@ -20,6 +20,11 @@ Use `0x` followed by an even number of hex digits. Lodestar's current request
 parser also accepts hex without the prefix; portable clients should emit the
 prefixed form. There is no request body or list of generalized indices on the wire.
 
+An object identifier is a 32-byte `0x`-prefixed root, a non-negative decimal slot
+within JavaScript's safe integer range, or `head`, `genesis`, `finalized`, or
+`justified`. Slots must contain only decimal digits. Partial numbers such as
+`1abc`, fractions, negative slots, and unsafe integers are rejected before lookup.
+
 JSON success responses contain `data.leaves`, `data.descriptor`, and `version`.
 Each leaf is exactly 32 bytes, represented by 64 hex digits after `0x`.
 The descriptor is a variable-length byte string in the same hex notation.
@@ -152,33 +157,53 @@ For a synthetic root consisting of 32 zero bytes, the root-only proof is:
 Its SSZ bytes are `08000000 28000000`, then 32 zero bytes, then `80`: 41 bytes
 in total. This is an encoding example, not an Ethereum state root.
 
-## Bounds and current errors
+## Bounds and errors
 
 The response schema allows at most 10,000 roots and 2,048 descriptor bytes. A
 canonical descriptor of at most 2,048 bytes can describe at most 8,192 terminal
 nodes. These are proof-tree nodes, not necessarily requested application fields.
 
-The current handlers additionally reject requests when
-`descriptor.length / 2 > maxGindicesInProof`. The default is `512`, so the default
-descriptor limit is 1,024 bytes. Despite the option's name, this is a byte-based
-approximation, not a count of targets. Increasing it does not change the response
-schema's bounds or make an otherwise invalid descriptor valid.
+The handlers enforce `min(2 * maxGindicesInProof, 2048)` descriptor bytes. The
+default setting is `512`, giving a 1,024-byte limit and at most 4,096 terminal
+roots. The hidden `--api.maxGindicesInProof` option retains its existing two-byte
+units; it does not count target indices. It accepts non-negative safe integers,
+and zero rejects all proof requests. Raising it cannot exceed the response
+schema's 2,048-byte limit or the resulting 8,192-terminal bound.
 
-The following table records existing v0 behavior, not a standardized error policy:
+The maximum traversal depth is 256 edges from the root, whose depth is zero.
+This is a server resource limit protecting recursive proof generation, not an
+SSZ protocol limit. Descriptor validation is iterative and uses the existing
+canonical descriptor parser. Identifier, size, grammar, and depth checks run
+before state/block retrieval, historical reconstruction, or proof generation.
+An oversized descriptor is rejected before parsing its grammar.
+
+For a limit of `D` descriptor bytes, a canonical tree has at most `4*D` terminals
+and `8*D - 1` meaningful traversal bits. Consequently, the SSZ proof container is
+at most `8 + 129*D` bytes: 132,104 bytes by default and 264,200 bytes at the schema
+ceiling. JSON represents each root as hex and has a different encoded size.
+These bounds constrain the proof request and response; they do not bound the
+cost of retrieving or reconstructing a state that is not cached.
+
+The following table describes Lodestar v0 behavior, not a standardized error policy:
 
 | Condition                                                    | Current status |
 | ------------------------------------------------------------ | -------------- |
-| Missing `format`, odd hex length, or invalid hex characters  | `400`          |
+| Invalid object identifier, missing `format`, or invalid hex  | `400`          |
 | Unsupported `Accept` media type                              | `406`          |
 | State or block lookup returns no result                      | `404`          |
-| Empty/incomplete descriptor, extra bytes, or nonzero padding | `500`          |
-| Handler descriptor-size guard exceeded                       | `500`          |
+| Empty/incomplete descriptor, extra bytes, or nonzero padding | `400`          |
+| Descriptor byte limit or traversal depth exceeded            | `413`          |
+| Internal retrieval or proof-generation failure               | `500`          |
 
 Historical reconstruction can also throw an error when disabled or when retained
 states or blocks are missing. These cases are not all mapped to `404`. Clients
 must not retry against a different state such as `head` merely to obtain a proof.
-The existing `500` responses for invalid descriptors are an implementation
-limitation; consumers should not depend on those classifications remaining fixed.
+Descriptor validation establishes tree shape, not whether each requested node
+exists in the selected SSZ tree. Traversal below a terminal chunk still fails
+during proof generation. Mapping those errors and historical availability errors
+consistently remains separate work. Earlier versions also returned `500` for
+invalid descriptors and exceeded byte limits; these now return `400` and `413`
+respectively. Successful proof bytes and fork metadata are unchanged.
 
 ## Independent reference and vectors
 
