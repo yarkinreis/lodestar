@@ -125,6 +125,7 @@ async
 auth
 backfill
 beaconcha
+bitlist
 blockRoot
 blockchain
 blockspace
@@ -163,6 +164,7 @@ devtools
 distutils
 dropdown
 eg
+encodings
 endian
 enodes
 enum
@@ -227,6 +229,7 @@ plataberget
 pnpm
 pre
 premined
+preorder
 produceBlockV
 protolambda
 prover
@@ -248,6 +251,7 @@ ssz
 stakers
 subnet
 subnets
+subtree
 sudo
 supernode
 tcp

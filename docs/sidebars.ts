@@ -66,6 +66,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         "libraries/api/using-the-api",
+        "libraries/api/proof-format",
         {
           type: "category",
           label: "Light Client",

@@ -7,6 +7,9 @@ compact Merkle multiproofs:
 - `/eth/v0/beacon/proof/state/{state_id}` proves data against a beacon state root.
 - `/eth/v0/beacon/proof/block/{block_id}` proves data against an unsigned beacon block root.
 
+See [Compact proof format](./proof-format.md) for the descriptor grammar, JSON and
+SSZ encodings, limits, and independent verification vectors.
+
 Enable the `proof` namespace on the node serving requests, alongside any other
 namespaces your application needs, for example `--rest.namespace beacon,config,proof`.
 For historical state requests, enable `--serveHistoricalState` on the serving node.
