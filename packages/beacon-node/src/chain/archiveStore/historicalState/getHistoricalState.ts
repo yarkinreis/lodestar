@@ -5,8 +5,9 @@ import {
   IBeaconStateView,
   createBeaconStateViewForHistoricalRegen,
 } from "@lodestar/state-transition";
-import {byteArrayEquals} from "@lodestar/utils";
+import {byteArrayEquals, toRootHex} from "@lodestar/utils";
 import {IBeaconDb} from "../../../db/index.js";
+import {RegenError, RegenErrorCode} from "../../regen/errors.js";
 import {HistoricalStateRegenMetrics} from "./metrics.js";
 import {RegenErrorType} from "./types.js";
 
@@ -47,41 +48,54 @@ export async function getHistoricalState(
   });
   loadStateTimer?.();
 
-  const transitionTimer = metrics?.stateTransitionTime.startTimer();
-  let blockCount = 0;
-  for await (const block of db.blockArchive.valuesStream({gt: state.slot, lte: slot})) {
-    try {
-      state = state.stateTransition(
-        {block},
-        {
-          verifyProposer: false,
-          verifySignatures: false,
-          verifyStateRoot: false,
-          executionPayloadStatus: ExecutionPayloadStatus.valid,
-          dataAvailabilityStatus: DataAvailabilityStatus.Available,
-        },
-        {metrics}
-      );
-    } catch (e) {
-      metrics?.regenErrorCount.inc({reason: RegenErrorType.blockProcessing});
-      throw e;
+  try {
+    const transitionTimer = metrics?.stateTransitionTime.startTimer();
+    let blockCount = 0;
+    for await (const block of db.blockArchive.valuesStream({gt: state.slot, lte: slot})) {
+      const previousState = state;
+      try {
+        state = state.stateTransition(
+          {block},
+          {
+            verifyProposer: false,
+            verifySignatures: false,
+            verifyStateRoot: false,
+            executionPayloadStatus: ExecutionPayloadStatus.valid,
+            dataAvailabilityStatus: DataAvailabilityStatus.Available,
+          },
+          {metrics}
+        );
+      } catch (e) {
+        metrics?.regenErrorCount.inc({reason: RegenErrorType.blockProcessing});
+        throw e;
+      }
+      previousState.release();
+      blockCount++;
+      const stateRoot = state.hashTreeRoot();
+      if (!byteArrayEquals(stateRoot, block.message.stateRoot)) {
+        metrics?.regenErrorCount.inc({reason: RegenErrorType.invalidStateRoot});
+        throw new RegenError({
+          code: RegenErrorCode.INVALID_STATE_ROOT,
+          slot: state.slot,
+          expected: toRootHex(block.message.stateRoot),
+          actual: toRootHex(stateRoot),
+        });
+      }
     }
-    blockCount++;
-    if (!byteArrayEquals(state.hashTreeRoot(), block.message.stateRoot)) {
-      metrics?.regenErrorCount.inc({reason: RegenErrorType.invalidStateRoot});
+    metrics?.stateTransitionBlocks.observe(blockCount);
+    transitionTimer?.();
+
+    if (state.slot !== slot) {
+      throw Error(`Failed to generate historical state for slot ${slot}`);
     }
+
+    const serializeTimer = metrics?.stateSerializationTime.startTimer();
+    const stateBytes = state.serialize();
+    serializeTimer?.();
+
+    regenTimer?.();
+    return stateBytes;
+  } finally {
+    state.release();
   }
-  metrics?.stateTransitionBlocks.observe(blockCount);
-  transitionTimer?.();
-
-  if (state.slot !== slot) {
-    throw Error(`Failed to generate historical state for slot ${slot}`);
-  }
-
-  const serializeTimer = metrics?.stateSerializationTime.startTimer();
-  const stateBytes = state.serialize();
-  serializeTimer?.();
-
-  regenTimer?.();
-  return stateBytes;
 }

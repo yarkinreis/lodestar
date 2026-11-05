@@ -14,6 +14,10 @@ This permits reconstruction from retained states and blocks; it does not backfil
 missing history. A missing state produces an error; retrying against `head` would
 prove a different state.
 
+Historical reconstruction replays retained blocks. If the requested slot was
+skipped and no state was saved at that exact slot, reconstruction fails instead
+of returning the preceding block's state.
+
 ## Choose the root and fork first
 
 Start with a beacon block header authenticated by your application, for example
@@ -26,6 +30,16 @@ and verify the proof against its state root. A slot selects a state; it does not
 authenticate the response. If the reconstructed root differs from the trusted
 header's state root, including after a reorganization, reject the result. Repeated
 requests for `head` or `finalized` can resolve to different states.
+
+After skipped slots, a block's parent header can be more than one slot older.
+Use that parent's authenticated header slot when proving its state; subtracting
+one from the child block's slot can select a different state.
+
+For [EIP-4788](https://eips.ethereum.org/EIPS/eip-4788) consumers, the execution
+block's timestamp selects the stored parent beacon block root. Authenticate the
+parent header against that root, then use the header's slot and state root for
+the state proof. The lookup timestamp does not directly identify the proof's
+state slot.
 
 Root-based state requests can also be used when the requested root is available,
 but they do not use the same historical reconstruction path as slot-based requests.
